@@ -1,0 +1,177 @@
+I wrote this Python script to automate the full track list and metadata of my vinyl collection. The information is contained in html tables on each 
+record’s page on discogs.com, meaning I could use #Pandas’ incredibly powerful read_html() function to easily grab the data. All tracks are combined in 
+one table, with data for one track on each row. The table is then written to Google Sheets. 
+
+
+
+
+import pandas as pd
+df = pd.read_csv('/Users/user/Downloads/Vinyl Record Inventory - Sheet1-4.csv')
+
+tracks = []
+metas = []
+
+# iterate over each url and pull the data from the html tables - first table is metadata, 
+# second is track name and length
+
+for url in df['DISCOGS URL']:
+    try:
+        tables = pd.read_html(url)
+        dftrack = tables[1]
+        dftrack['DISCOGS URL'] = url
+        tracks.append(dftrack)
+        print(url+' added')
+    except:
+        print(url)
+
+dft = pd.concat(tracks)
+print('tracks added')
+
+
+for url in df['DISCOGS URL']:
+    try:
+        tables = pd.read_html(url)
+        dfmeta =  tables[0]
+        dfmeta = pd.DataFrame(dfmeta.T.set_axis(dfmeta.T.iloc[0,:], axis = 'columns').loc[1]).T
+        dfmeta['DISCOGS URL'] = url
+        metas.append(dfmeta)
+    except:
+        print(url)
+pd.concat(metas)
+
+dfm = pd.concat(metas)
+print('metadata added')
+
+
+# data cleansing 
+
+dfm['YEAR OF RELEASE'] = dfm['Year:'].fillna("").astype(str)+dfm['Released:'].fillna("").astype(str)
+
+
+artists = []
+
+for url in df['DISCOGS URL']:
+    try:
+        page = urlopen(url)
+        html_bytes = page.read()
+        html = html_bytes.decode("utf-8")
+
+        title_index = html.find("<title>")
+        start_index = title_index + len("<title>")
+        end_index = html.find("</title>")
+        title = html[start_index:end_index]
+        full_title = title.split('title data-rh="">')[1]
+        artist = full_title.split(' – ', 1)[0]
+        if '-' in artist:
+            artist = artist.split('-')[0]
+        artists.append(artist)
+        print(artist)
+    except:
+        artists.append('-')
+        print('?')
+
+# add artists to data source (url table)
+        
+df['ARTIST'] = artists
+print('Artists added and cleaned')
+
+
+# add artist to each track
+df1 = pd.merge(pd.merge(dft, df, how = 'left', on = 'DISCOGS URL'), dfm, how = 'left', on = 'DISCOGS URL')
+
+
+df2 = df1[[0,2,'ARTIST','TITLE',3,'DISCOGS URL','Genre:','Style:','Label:',
+                        'Format:','Country:','YEAR OF RELEASE','Series:']]
+
+# clean track names
+
+track = []
+for s in range(len(df2)):
+    try:
+        spl = df2.loc[s,2].split()
+        red = []
+        ups = []
+        uppos = []
+        for w in range(len(spl)):
+            for i in range(1, len(spl[w])):
+                if spl[w][i].isupper():
+                    ups.append(int(w))
+                    uppos.append(i)
+        ups = pd.Series(ups)
+        
+        for j in range(ups.min()):
+            red.append(spl[j])
+        red.append(spl[j+1][:uppos[0]])
+        track.append([' '.join(red)][0])   
+    except:
+        track.append([' '.join(spl)][0])
+
+
+
+tracks = []
+for t in track:
+    tracks.append(t.strip(' ('))
+    
+df2['Track'] = tracks
+
+
+# clean record label column by removing suffixes
+
+labels = []
+for i in range(len(df2)):
+    try:
+        y = df2['Label:'][i].split()##.value_counts()
+        end = y.index('â\x80\x93')
+        red = y[:end]
+        labels.append(' '.join(red))
+        #'â\x80\x93'
+    except:
+        labels.append("")
+
+df2['Label'] = labels
+
+df3 = df2[[0,'Track','ARTIST', 'TITLE',3,'DISCOGS URL', 'Genre:','Style:','Label', 'Format:',
+                       'Country:','YEAR OF RELEASE','Series:']].set_axis([ 'Track position','Track','Artist',
+                    'Record title','Track length','Discogs URL','Genre','Style','Label','Format',
+                       'Country','Released','Series'], axis = 'columns')
+
+
+
+# Requirements for writing the table to Google Sheets
+
+#pip install oauth2client
+#pip install PyOpenSSL
+#pip install gspread
+#pip install df2gspread
+#pip install gspread_dataframe
+#pip install pydrive
+
+
+
+import gspread
+from gspread_dataframe import set_with_dataframe
+from google.oauth2.service_account import Credentials
+from pydrive.auth import GoogleAuth
+from pydrive.drive import GoogleDrive
+scopes = ['https://www.googleapis.com/auth/spreadsheets',
+          'https://www.googleapis.com/auth/drive']
+
+credentials = Credentials.from_service_account_file('/Users/user/Downloads/tracks-373423-6b16025795f2.json', scopes=scopes)
+
+gc = gspread.authorize(credentials)
+
+gauth = GoogleAuth()
+drive = GoogleDrive(gauth)
+
+# open a google sheet
+gs = gc.open_by_key('14C1sffL2Y9hygT3LARFAcmhU6hI7efnQtxGh61bpxHA') # <-- found in url of Google sheet
+
+# select a work sheet from its name
+worksheet1 = gs.worksheet('vinyl1219')# <-- name of Google sheet
+
+# write to sheets
+worksheet1.clear()
+set_with_dataframe(worksheet=worksheet1, dataframe=df3, include_index=False,
+include_column_header=True, resize=True)
+
+print('Success! Spreadsheet updated in Google Sheets')
